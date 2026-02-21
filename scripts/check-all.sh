@@ -5,6 +5,7 @@ POSTIZ_DIR="/Users/mikelcobian/Repositorios Trabajo/postiz-app"
 AIPAL_DIR="/Users/mikelcobian/Repositorios Trabajo/IA/Asistente-codex-leiva"
 POSTIZ_URL="https://social.mikelcobian.com"
 BOT_NAME="aipal-bot"
+BOT_STATUS_SCRIPT="$AIPAL_DIR/scripts/bot-status.sh"
 
 ok() { printf "✅ %s\n" "$1"; }
 warn() { printf "⚠️  %s\n" "$1"; }
@@ -52,10 +53,17 @@ fi
 cd "$AIPAL_DIR"
 if npx pm2 status >/tmp/check-all-pm2-status.txt 2>&1; then
   ok "PM2 is available"
-  if grep -q "$BOT_NAME" /tmp/check-all-pm2-status.txt && grep -q "online" /tmp/check-all-pm2-status.txt; then
+  BOT_STATUS="errored"
+  if [[ -f "$BOT_STATUS_SCRIPT" ]]; then
+    BOT_STATUS="$(/bin/bash "$BOT_STATUS_SCRIPT")"
+  fi
+  echo "bot_status=$BOT_STATUS"
+  if [[ "$BOT_STATUS" == "online" ]]; then
     ok "Bot $BOT_NAME is online"
+  elif [[ "$BOT_STATUS" == "stopped" || "$BOT_STATUS" == "missing" ]]; then
+    err "Bot $BOT_NAME is $BOT_STATUS (run: npx pm2 restart $BOT_NAME)"
   else
-    err "Bot $BOT_NAME is not online (run: npx pm2 restart $BOT_NAME)"
+    err "Bot $BOT_NAME status parser returned errored (check: npx pm2 logs $BOT_NAME)"
   fi
 else
   err "PM2 status command failed"
