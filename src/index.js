@@ -113,7 +113,9 @@ if (!BOT_TOKEN) {
 }
 
 
-const WHISPER_CMD = 'mlx_whisper';
+// Whisper command: allow override via env to support different CLIs
+// Defaults to Homebrew's `whisper` if available; can be set to `mlx_whisper`.
+const WHISPER_CMD = process.env.AIPAL_WHISPER_CMD || 'whisper';
 const WHISPER_TIMEOUT_MS = 300000;
 const WHISPER_MODEL = 'mlx-community/whisper-large-v3-turbo';
 const WHISPER_LANGUAGE = 'es';

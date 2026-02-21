@@ -21,6 +21,7 @@
     "telegraf": "^4.16.3"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.3.13"
+    "@biomejs/biome": "2.3.13",
+    "pm2": "^6.0.14"
   }
 }
