@@ -12,3 +12,6 @@ Style:
 - Ask when needed.
 
 Notes:
+
+- Todas las features y cambios deben hacerse en ramas hijas de `dev_agents`.
+- Asumir que la rama `dev_agents` siempre está disponible en el repositorio para crear nuevas ramas de trabajo.
