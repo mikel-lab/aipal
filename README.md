@@ -11,7 +11,7 @@ Minimal Telegram bot that forwards messages to a local CLI agent (Codex by defau
 - Queues requests per chat to avoid overlapping runs
 - Keeps agent session state per agent when JSON output is detected
 - Handles text, audio (via Parakeet), images, and documents
-- Supports `/thinking`, `/agent`, and `/cron` for runtime tweaks
+- Supports `/thinking`, `/agent`, `/skill`, `/workspace`, and `/cron` for runtime tweaks
 
 ## Requirements
 - Node.js 24+
@@ -49,6 +49,8 @@ Open Telegram, send `/start`, then any message.
 - `/agent default`: clear agent override for the current topic and return to global agent
 - `/reset`: clear the current agent session for this topic (drops the stored session id for this agent)
 - `/model [model_id]`: view/set the model for the current agent (persisted in `config.json`)
+- `/skill [list|use|clear|auto on|off|suggest <text>]`: inspect/control automatic skill routing per topic
+- `/workspace [set <absolute_path>|clear]`: set a per-topic project directory (agent execution cwd)
 - `/memory [status|tail [n]|search <query>|curate]`: inspect, search, and curate automatic memory
 - `/cron [list|reload|chatid]`: manage cron jobs (see below)
 - `/help`: list available commands and scripts
@@ -79,6 +81,16 @@ Aipal supports Telegram Topics. Sessions and agent overrides are kept per-topic.
 - Messages in the main chat ("root") have their own sessions.
 - Messages in any topic thread have their own independent sessions.
 - You can set a different agent for each topic using `/agent <name>`.
+- You can set a different skill override for each topic using `/skill use <name>`.
+- You can set a different workspace (cwd) for each topic using `/workspace set <absolute_path>`.
+
+### Skills (automatic + explicit)
+- Aipal can auto-select skills based on prompt keywords (for example iOS/SwiftUI, Postiz/TikTok, PM2/ops).
+- You can override the selected skill explicitly with `/skill use <name>`.
+- You can disable auto-skill routing for a topic with `/skill auto off`.
+- Aipal never installs skills automatically. If it detects a likely missing skill, it warns and suggests options.
+- Repo-local skills live under `skills/*/SKILL.md`.
+- Codex/global skills from your local Codex installation are detected when available and can be selected.
 
 ### Cron jobs
 Cron jobs are loaded from `~/.config/aipal/cron.json` (or `$XDG_CONFIG_HOME/aipal/cron.json`) and are sent to a single Telegram chat (the `cronChatId` configured in `config.json`).
@@ -110,6 +122,15 @@ Optional:
 - `AIPAL_MEMORY_CURATE_EVERY`: auto-curate memory after N captured events (default: 20)
 - `AIPAL_MEMORY_RETRIEVAL_LIMIT`: max retrieved memory lines injected per request (default: 8)
 - `ALLOWED_USERS`: comma-separated list of Telegram user IDs allowed to interact with the bot (if unset/empty, bot is open to everyone)
+
+### Per-topic workspace (external projects)
+By default, the agent runs in Aipal's repo directory. To work reliably on a project outside this repo (for example an iOS app), set a workspace in the Telegram topic:
+
+```text
+/workspace set /absolute/path/to/your/project
+```
+
+That path becomes the execution working directory for agent runs in that topic.
 
 ## Config file (optional)
 The bot stores `/agent` in a JSON file at:

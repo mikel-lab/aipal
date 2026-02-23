@@ -1,4 +1,4 @@
-# Configuration (config.json + memory.md + soul.md + cron.json + memory state)
+# Configuration (config.json + memory.md + soul.md + cron.json + skills/workspaces + memory state)
 
 This bot stores a minimal JSON config with the values set by `/agent`.
 
@@ -33,6 +33,55 @@ Schema:
   "chatId:topicId": "agentId"
 }
 ```
+
+## Skills routing config (optional)
+Automatic skills routing and per-topic skill overrides are stored in:
+- `~/.config/aipal/skills.json`
+- If `XDG_CONFIG_HOME` is set, it uses `$XDG_CONFIG_HOME/aipal/skills.json`
+
+Schema (example):
+```json
+{
+  "topicOverrides": {
+    "chatId:topicId": "swiftui-expert-skill"
+  },
+  "topicAuto": {
+    "chatId:topicId": true
+  },
+  "aliases": {
+    "ios": "swiftui-expert-skill",
+    "swiftdata": "axiom-swiftdata"
+  },
+  "catalog": {
+    "swiftui-expert-skill": { "source": "codex", "mode": "global" },
+    "ios-build-review": { "source": "repo", "path": "skills/ios-build-review/SKILL.md" }
+  }
+}
+```
+
+Notes:
+- `topicOverrides` forces a skill for a topic.
+- `topicAuto` enables/disables automatic skill routing per topic (default: `true` if no value exists).
+- `aliases` maps keywords to preferred skills for auto-routing.
+- Aipal never installs skills automatically; missing skills are only suggested.
+
+## Topic workspaces config (optional)
+Per-topic workspaces (agent execution cwd) are stored in:
+- `~/.config/aipal/workspaces.json`
+- If `XDG_CONFIG_HOME` is set, it uses `$XDG_CONFIG_HOME/aipal/workspaces.json`
+
+Schema (example):
+```json
+{
+  "topicWorkspace": {
+    "chatId:topicId": "/Users/you/Projects/MyIOSApp"
+  }
+}
+```
+
+Notes:
+- If the workspace path is missing/invalid, Aipal falls back to its default cwd and warns in the response.
+- This is especially useful for external projects (for example, iOS apps outside the Aipal repo).
 
 ## Memory file (optional)
 If `memory.md` exists alongside `config.json`, its contents are injected into the very first prompt of a new conversation (i.e. when there is no active session/thread).

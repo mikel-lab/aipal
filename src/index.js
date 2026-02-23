@@ -28,6 +28,25 @@ const {
   updateConfig,
 } = require('./config-store');
 const {
+  loadSkillsConfig,
+  saveSkillsConfig,
+  getTopicSkillOverride,
+  setTopicSkillOverride,
+  clearTopicSkillOverride,
+  isTopicSkillAutoEnabled,
+  setTopicSkillAuto,
+} = require('./skill-store');
+const {
+  loadWorkspacesConfig,
+  saveWorkspacesConfig,
+  getTopicWorkspace,
+  setTopicWorkspace,
+  clearTopicWorkspace,
+} = require('./workspace-store');
+const {
+  resolveSkillRouting,
+} = require('./skill-routing');
+const {
   clearAgentOverride,
   getAgentOverride,
   setAgentOverride,
@@ -190,6 +209,10 @@ let threadsPersist = Promise.resolve();
 let agentOverrides = new Map();
 let agentOverridesPersist = Promise.resolve();
 let memoryPersist = Promise.resolve();
+let skillsConfig = null;
+let skillsConfigPersist = Promise.resolve();
+let workspacesConfig = null;
+let workspacesConfigPersist = Promise.resolve();
 const threadTurns = new Map();
 const lastScriptOutputs = new Map();
 const SCRIPT_CONTEXT_MAX_CHARS = 8000;
@@ -197,6 +220,7 @@ let memoryEventsSinceCurate = 0;
 let globalThinking;
 let globalAgent = AGENT_CODEX;
 let globalModels = {};
+const DEFAULT_WORKSPACE_DIR = process.cwd();
 
 const scriptManager = new ScriptManager(SCRIPTS_DIR);
 
@@ -204,6 +228,8 @@ bot.command('help', async (ctx) => {
   const builtIn = [
     '/start - Hello world',
     '/agent <name> - Switch agent (codex, claude, gemini, opencode)',
+    '/skill [list|use|clear|auto|suggest] - Skill routing controls',
+    '/workspace [set|clear] - Set project directory per topic',
     '/thinking <level> - Set reasoning effort',
     '/model [model_id] - View/set model for current agent',
     '/memory [status|tail|search|curate] - Memory capture + retrieval + curation',
@@ -350,12 +376,97 @@ function persistMemory(task) {
   return memoryPersist;
 }
 
+function persistSkillsConfig() {
+  if (!skillsConfig) return Promise.resolve();
+  skillsConfigPersist = skillsConfigPersist
+    .catch(() => {})
+    .then(() => saveSkillsConfig(skillsConfig));
+  return skillsConfigPersist;
+}
+
+function persistWorkspacesConfig() {
+  if (!workspacesConfig) return Promise.resolve();
+  workspacesConfigPersist = workspacesConfigPersist
+    .catch(() => {})
+    .then(() => saveWorkspacesConfig(workspacesConfig));
+  return workspacesConfigPersist;
+}
+
 function resolveEffectiveAgentId(chatId, topicId, overrideAgentId) {
   return (
     overrideAgentId ||
     getAgentOverride(agentOverrides, chatId, topicId) ||
     globalAgent
   );
+}
+
+function ensureSkillsConfigLoaded() {
+  if (!skillsConfig) skillsConfig = { topicOverrides: {}, topicAuto: {}, aliases: {}, catalog: {} };
+  return skillsConfig;
+}
+
+function ensureWorkspacesConfigLoaded() {
+  if (!workspacesConfig) workspacesConfig = { topicWorkspace: {} };
+  return workspacesConfig;
+}
+
+async function resolveWorkspaceForTopic(chatId, topicId) {
+  const state = ensureWorkspacesConfigLoaded();
+  const configured = getTopicWorkspace(state, chatId, topicId);
+  if (!configured) {
+    return {
+      configured: null,
+      effective: DEFAULT_WORKSPACE_DIR,
+      valid: true,
+      fallbackUsed: false,
+      warning: '',
+    };
+  }
+  const resolved = path.resolve(configured);
+  try {
+    const stat = await fs.stat(resolved);
+    if (!stat.isDirectory()) {
+      return {
+        configured,
+        effective: DEFAULT_WORKSPACE_DIR,
+        valid: false,
+        fallbackUsed: true,
+        warning: `Workspace inválido (no es carpeta): ${resolved}. Uso fallback del bot.`,
+      };
+    }
+    return {
+      configured,
+      effective: resolved,
+      valid: true,
+      fallbackUsed: false,
+      warning: '',
+    };
+  } catch {
+    return {
+      configured,
+      effective: DEFAULT_WORKSPACE_DIR,
+      valid: false,
+      fallbackUsed: true,
+      warning: `Workspace no encontrado: ${resolved}. Uso fallback del bot.`,
+    };
+  }
+}
+
+async function resolveRuntimeContext(chatId, prompt, options = {}) {
+  const topicId = options.topicId;
+  const workspace = await resolveWorkspaceForTopic(chatId, topicId);
+  const skillResult = await resolveSkillRouting({
+    prompt,
+    chatId,
+    topicId: normalizeTopicId(topicId),
+    skillsState: ensureSkillsConfigLoaded(),
+    repoRoot: DEFAULT_WORKSPACE_DIR,
+    manualOverrideSkill: options.manualSkillName,
+  });
+  return {
+    workspace,
+    skill: skillResult,
+  };
 }
 
 function buildMemoryThreadKey(chatId, topicId, agentId) {
@@ -757,6 +868,12 @@ async function runAgentForChat(chatId, prompt, options = {}) {
   if (migrated) {
     persistThreads().catch((err) => console.warn('Failed to persist migrated threads:', err));
   }
+  const runtimeContext = await resolveRuntimeContext(chatId, prompt, {
+    topicId,
+    manualSkillName: options.manualSkillName,
+  });
+  const workspaceInfo = runtimeContext.workspace;
+  const skillInfo = runtimeContext.skill;
   let promptWithContext = prompt;
   if (agent.id === 'claude') {
     promptWithContext = prefixTextWithTimestamp(promptWithContext, {
@@ -780,6 +897,11 @@ async function runAgentForChat(chatId, prompt, options = {}) {
     promptWithContext = promptWithContext
       ? `${promptWithContext}\n\n${retrievalContext}`
       : retrievalContext;
+  }
+  if (skillInfo?.skillPromptBlock) {
+    promptWithContext = promptWithContext
+      ? `${skillInfo.skillPromptBlock}\n\n${promptWithContext}`
+      : skillInfo.skillPromptBlock;
   }
   const thinking = globalThinking;
   const finalPrompt = buildPrompt(
@@ -815,7 +937,7 @@ async function runAgentForChat(chatId, prompt, options = {}) {
 
   const startedAt = Date.now();
   console.info(
-    `Agent start chat=${chatId} topic=${topicId || 'root'} agent=${agent.id} thread=${threadId || 'new'}`
+    `Agent start chat=${chatId} topic=${topicId || 'root'} agent=${agent.id} thread=${threadId || 'new'} skill=${skillInfo?.selectedSkill?.name || 'none'} skill_source=${skillInfo?.source || 'none'} skill_confidence=${skillInfo?.confidence || 'low'} workspace=${workspaceInfo?.effective || DEFAULT_WORKSPACE_DIR} missing_skill_prompted=${skillInfo?.missingSkillPrompted ? 'true' : 'false'}`
   );
   let output;
   let execError;
@@ -823,6 +945,7 @@ async function runAgentForChat(chatId, prompt, options = {}) {
     output = await execLocal('bash', ['-lc', commandToRun], {
       timeout: AGENT_TIMEOUT_MS,
       maxBuffer: AGENT_MAX_BUFFER,
+      cwd: workspaceInfo?.effective || DEFAULT_WORKSPACE_DIR,
     });
   } catch (err) {
     execError = err;
@@ -857,6 +980,7 @@ async function runAgentForChat(chatId, prompt, options = {}) {
       const listOutput = await execLocal('bash', ['-lc', listCommandToRun], {
         timeout: AGENT_TIMEOUT_MS,
         maxBuffer: AGENT_MAX_BUFFER,
+        cwd: workspaceInfo?.effective || DEFAULT_WORKSPACE_DIR,
       });
       if (typeof agent.parseSessionList === 'function') {
         const resolved = agent.parseSessionList(listOutput);
@@ -872,7 +996,14 @@ async function runAgentForChat(chatId, prompt, options = {}) {
     threads.set(threadKey, parsed.threadId);
     persistThreads().catch((err) => console.warn('Failed to persist threads:', err));
   }
-  return parsed.text || output;
+  let finalText = parsed.text || output;
+  const notices = [];
+  if (workspaceInfo?.warning) notices.push(workspaceInfo.warning);
+  if (skillInfo?.missingSkillNotice) notices.push(skillInfo.missingSkillNotice.trim());
+  if (notices.length > 0) {
+    finalText = `${notices.join('\n\n')}\n\n${finalText}`.trim();
+  }
+  return finalText;
 }
 
 async function replyWithResponse(ctx, response) {
@@ -1028,6 +1159,168 @@ bot.command('agent', async (ctx) => {
     );
     ctx.reply(`Agent for this topic set to ${getAgentLabel(normalizedAgent)}.`);
   }
+});
+
+bot.command('skill', async (ctx) => {
+  const value = extractCommandValue(ctx.message.text);
+  const parts = value ? value.split(/\s+/).filter(Boolean) : [];
+  const subcommand = (parts[0] || 'status').toLowerCase();
+  const chatId = ctx.chat.id;
+  const topicId = getTopicId(ctx);
+  const normalizedTopic = normalizeTopicId(topicId);
+  const state = ensureSkillsConfigLoaded();
+
+  if (subcommand === 'status') {
+    const override = getTopicSkillOverride(state, chatId, topicId);
+    const auto = isTopicSkillAutoEnabled(state, chatId, topicId);
+    await ctx.reply(
+      [
+        `Topic: ${normalizedTopic}`,
+        `Auto skills: ${auto ? 'ON' : 'OFF'}`,
+        `Manual override: ${override || '(none)'}`,
+        'Use /skill list | /skill use <name> | /skill clear | /skill auto on|off | /skill suggest <texto>',
+      ].join('\n')
+    );
+    return;
+  }
+
+  if (subcommand === 'list') {
+    const resolved = await resolveRuntimeContext(chatId, '', { topicId });
+    const repoNames = resolved.skill.repoSkills.map((s) => s.name);
+    const codexNames = resolved.skill.codexSkills.map((s) => s.name);
+    const lines = [
+      `Repo skills (${repoNames.length}): ${repoNames.length ? repoNames.join(', ') : '(none)'}`,
+      `Codex/global skills (${codexNames.length}): ${codexNames.length ? codexNames.join(', ') : '(none detected)'}`,
+    ];
+    await ctx.reply(lines.join('\n'));
+    return;
+  }
+
+  if (subcommand === 'use') {
+    const skillName = parts.slice(1).join(' ').trim();
+    if (!skillName) {
+      await ctx.reply('Usage: /skill use <name>');
+      return;
+    }
+    const resolved = await resolveRuntimeContext(chatId, '', { topicId, manualSkillName: skillName });
+    if (!resolved.skill.selectedSkill) {
+      const suggestions = resolved.skill.suggestions || [];
+      await ctx.reply(
+        [
+          `Skill no encontrada: ${skillName}`,
+          suggestions.length ? `Sugerencias: ${suggestions.join(', ')}` : 'Usa /skill list para ver skills detectadas.',
+          'No he instalado nada automáticamente.',
+        ].join('\n')
+      );
+      return;
+    }
+    setTopicSkillOverride(state, chatId, topicId, resolved.skill.selectedSkill.name);
+    await persistSkillsConfig();
+    await ctx.reply(`Skill fija para ${normalizedTopic}: ${resolved.skill.selectedSkill.name}`);
+    return;
+  }
+
+  if (subcommand === 'clear') {
+    const removed = clearTopicSkillOverride(state, chatId, topicId);
+    await persistSkillsConfig();
+    await ctx.reply(removed ? `Skill override eliminada para ${normalizedTopic}.` : 'No había skill override en este topic.');
+    return;
+  }
+
+  if (subcommand === 'auto') {
+    const flag = String(parts[1] || '').toLowerCase();
+    if (!['on', 'off'].includes(flag)) {
+      await ctx.reply('Usage: /skill auto on|off');
+      return;
+    }
+    setTopicSkillAuto(state, chatId, topicId, flag === 'on');
+    await persistSkillsConfig();
+    await ctx.reply(`Auto skills ${flag.toUpperCase()} para ${normalizedTopic}.`);
+    return;
+  }
+
+  if (subcommand === 'suggest') {
+    const probe = parts.slice(1).join(' ').trim();
+    if (!probe) {
+      await ctx.reply('Usage: /skill suggest <texto o tarea>');
+      return;
+    }
+    const resolved = await resolveRuntimeContext(chatId, probe, { topicId });
+    const lines = [];
+    if (resolved.skill.selectedSkill) {
+      lines.push(`Skill sugerida: ${resolved.skill.selectedSkill.name}`);
+      lines.push(`Origen: ${resolved.skill.source}`);
+      lines.push(`Confianza: ${resolved.skill.confidence}`);
+    } else {
+      lines.push('No hay una skill clara para ese texto.');
+    }
+    if (resolved.skill.suggestions?.length) {
+      lines.push(`Sugerencias (faltantes/no registradas): ${resolved.skill.suggestions.join(', ')}`);
+      lines.push('No se instalará ninguna automáticamente.');
+    }
+    await ctx.reply(lines.join('\n'));
+    return;
+  }
+
+  await ctx.reply('Usage: /skill [list|use|clear|auto on|off|suggest <texto>]');
+});
+
+bot.command('workspace', async (ctx) => {
+  const value = extractCommandValue(ctx.message.text);
+  const parts = value ? value.split(/\s+/).filter(Boolean) : [];
+  const subcommand = (parts[0] || 'status').toLowerCase();
+  const chatId = ctx.chat.id;
+  const topicId = getTopicId(ctx);
+  const normalizedTopic = normalizeTopicId(topicId);
+  const state = ensureWorkspacesConfigLoaded();
+
+  if (subcommand === 'status') {
+    const info = await resolveWorkspaceForTopic(chatId, topicId);
+    await ctx.reply(
+      [
+        `Topic: ${normalizedTopic}`,
+        `Workspace configurado: ${info.configured || '(none)'}`,
+        `Workspace efectivo: ${info.effective}`,
+        `Estado: ${info.valid ? 'OK' : 'FALLBACK'}`,
+        'Use /workspace set <absolute_path> | /workspace clear',
+      ].join('\n')
+    );
+    return;
+  }
+
+  if (subcommand === 'set') {
+    const workspacePath = value.replace(/^set\s+/i, '').trim();
+    if (!workspacePath) {
+      await ctx.reply('Usage: /workspace set <absolute_path>');
+      return;
+    }
+    if (!path.isAbsolute(workspacePath)) {
+      await ctx.reply('Workspace debe ser una ruta absoluta.');
+      return;
+    }
+    setTopicWorkspace(state, chatId, topicId, workspacePath);
+    await persistWorkspacesConfig();
+    const info = await resolveWorkspaceForTopic(chatId, topicId);
+    await ctx.reply(
+      info.valid
+        ? `Workspace para ${normalizedTopic} guardado: ${info.effective}`
+        : `${info.warning}`
+    );
+    return;
+  }
+
+  if (subcommand === 'clear') {
+    const removed = clearTopicWorkspace(state, chatId, topicId);
+    await persistWorkspacesConfig();
+    await ctx.reply(
+      removed
+        ? `Workspace eliminado para ${normalizedTopic}. Usando fallback: ${DEFAULT_WORKSPACE_DIR}`
+        : 'No había workspace configurado en este topic.'
+    );
+    return;
+  }
+
+  await ctx.reply('Usage: /workspace [set <absolute_path>|clear]');
 });
 
 bot.command('reset', async (ctx) => {
@@ -1333,6 +1626,8 @@ bot.on('text', (ctx) => {
         'start',
         'thinking',
         'agent',
+        'skill',
+        'workspace',
         'model',
         'memory',
         'reset',
@@ -1738,6 +2033,21 @@ loadAgentOverrides()
     console.info(`Loaded ${agentOverrides.size} agent override(s) from disk`);
   })
   .catch((err) => console.warn('Failed to load agent overrides:', err));
+loadSkillsConfig()
+  .then((loaded) => {
+    skillsConfig = loaded;
+    const catalogSize = Object.keys(loaded.catalog || {}).length;
+    console.info(
+      `Loaded skills config (topicOverrides=${Object.keys(loaded.topicOverrides || {}).length}, aliases=${Object.keys(loaded.aliases || {}).length}, catalog=${catalogSize})`
+    );
+  })
+  .catch((err) => console.warn('Failed to load skills config:', err));
+loadWorkspacesConfig()
+  .then((loaded) => {
+    workspacesConfig = loaded;
+    console.info(`Loaded workspaces config (${Object.keys(loaded.topicWorkspace || {}).length} topic mapping(s))`);
+  })
+  .catch((err) => console.warn('Failed to load workspaces config:', err));
 hydrateGlobalSettings()
   .then((config) => {
     if (config.cronChatId) {
@@ -1789,7 +2099,13 @@ function shutdown(signal) {
         ]);
       }
       await Promise.race([
-        Promise.allSettled([threadsPersist, agentOverridesPersist, memoryPersist]),
+        Promise.allSettled([
+          threadsPersist,
+          agentOverridesPersist,
+          memoryPersist,
+          skillsConfigPersist,
+          workspacesConfigPersist,
+        ]),
         new Promise((resolve) => setTimeout(resolve, 2000)),
       ]);
     })
