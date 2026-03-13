@@ -26,6 +26,11 @@ npm install
 cp .env.example .env
 ```
 
+Analisis local con Codex + Chrome:
+```bash
+node scripts/tiktok-creative-center-trends.js --quick
+```
+
 1. Create a Telegram bot with BotFather and get the token.
 2. Set `TELEGRAM_BOT_TOKEN` in `.env`.
 3. Start the bot:

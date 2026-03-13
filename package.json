@@ -22,6 +22,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.13",
+    "chrome-devtools-mcp": "^0.20.0",
     "pm2": "^6.0.14"
   }
 }
