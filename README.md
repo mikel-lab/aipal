@@ -118,6 +118,17 @@ If the agent generates a document (or needs to send a file), save it under the d
 ```
 The bot will send the document back to Telegram.
 
+### Spendwise material sender
+If a workflow writes a `message.txt` file plus PNG images into:
+`/Users/mikelcobian/Repositorios Trabajo/socialmedia-instructions/spendwise/spendwise-material`
+you can send that package to the configured Telegram chat with:
+
+```bash
+npm run send:spendwise
+```
+
+The script reads `TELEGRAM_BOT_TOKEN` from `.env`, resolves the destination chat from `ALERT_CHAT_ID` or `~/.config/aipal/config.json` (`cronChatId`), sends `message.txt`, and then sends every image file in the folder.
+
 ## Configuration
 The only required environment variable is `TELEGRAM_BOT_TOKEN` in `.env`.
 
