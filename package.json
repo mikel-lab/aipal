@@ -12,8 +12,11 @@
     "build": "node --check src/index.js",
     "dev": "node --watch src/index.js",
     "lint": "biome lint .",
+    "send:spendwise": "node scripts/send-spendwise-material.js",
     "start": "node src/index.js",
-    "test": "node --test"
+    "test": "node --test",
+    "send:outfy": "node scripts/send-outfy-material.js",
+    "send:caloriecam": "node scripts/send-caloriecam-material.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
